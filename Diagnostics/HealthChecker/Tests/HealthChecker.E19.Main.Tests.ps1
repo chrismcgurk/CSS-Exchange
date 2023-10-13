@@ -41,14 +41,15 @@ Describe "Testing Health Checker by Mock Data Imports" {
             TestObjectMatch "MAPI/HTTP Enabled" "True"
             TestObjectMatch "Enable Download Domains" "False"
             TestObjectMatch "AD Split Permissions" "False"
+            TestObjectMatch "Dynamic Distribution Group Public Folder Mailboxes Count" 1 -WriteType "Green"
 
-            $Script:ActiveGrouping.Count | Should -Be 4
+            $Script:ActiveGrouping.Count | Should -Be 5
         }
 
         It "Display Results - Operating System Information" {
             SetActiveDisplayGrouping "Operating System Information"
 
-            TestObjectMatch "Version" "Microsoft Windows Server 2019 Datacenter"
+            TestObjectMatch "Version" "Windows Server 2019 Datacenter (Server Core)"
             TestObjectMatch "Time Zone" "Pacific Standard Time"
             TestObjectMatch "Dynamic Daylight Time Enabled" "True"
             TestObjectMatch ".NET Framework" "4.8" -WriteType "Green"
@@ -99,7 +100,7 @@ Describe "Testing Health Checker by Mock Data Imports" {
             TestObjectMatch "RSS Enabled" "True" -WriteType "Green"
             TestObjectMatch "Link Speed" "10000 Mbps"
             TestObjectMatch "IPv6 Enabled" "True"
-            TestObjectMatch "Address" "192.168.11.11\24 Gateway: 192.168.11.1"
+            TestObjectMatch "Address" "192.168.11.11/24 Gateway: 192.168.11.1"
             TestObjectMatch "Registered In DNS" "True"
             TestObjectMatch "Packets Received Discarded" 0 -WriteType "Green"
 
@@ -117,8 +118,9 @@ Describe "Testing Health Checker by Mock Data Imports" {
             TestObjectMatch "Credential Guard Enabled" $false
             TestObjectMatch "EdgeTransport.exe.config Present" "True" -WriteType "Green"
             TestObjectMatch "Open Relay Wild Card Domain" "Not Set"
+            TestObjectMatch "HSTS Enabled" "False"
 
-            $Script:ActiveGrouping.Count | Should -Be 9
+            $Script:ActiveGrouping.Count | Should -Be 10
         }
 
         It "Display Results - Security Settings" {
@@ -134,6 +136,7 @@ Describe "Testing Health Checker by Mock Data Imports" {
             TestObjectMatch "AMSI Enabled" "True" -WriteType "Green"
             TestObjectMatch "Strict Mode disabled" "False" -WriteType "Green"
             TestObjectMatch "BaseTypeCheckForDeserialization disabled" "False" -WriteType "Green"
+            TestObjectMatch "AES256-CBC Protected Content Support" "Not Supported Build" -WriteType "Red"
 
             $Script:ActiveGrouping.Count | Should -Be 79
         }
@@ -143,11 +146,18 @@ Describe "Testing Health Checker by Mock Data Imports" {
 
             $cveTests = GetObject "Security Vulnerability"
             $cveTests.Contains("CVE-2020-1147") | Should -Be $true
-            $cveTests.Count | Should -Be 39
+            $cveTests.Contains("CVE-2023-36434") | Should -Be $true
+            $cveTests.Count | Should -Be 45
             $downloadDomains = GetObject "CVE-2021-1730"
             $downloadDomains.DownloadDomainsEnabled | Should -Be "False"
             TestObjectMatch "Extended Protection Vulnerable" "True" -WriteType "Red"
             TestObjectMatch "Extended Protection Vulnerable Details" "Your Exchange server is at risk. Install the latest SU and enable Extended Protection" -WriteType "Red"
+        }
+
+        It "Display Results - Exchange IIS Information" {
+            SetActiveDisplayGrouping "Exchange IIS Information"
+            $tokenCacheModuleInformation = GetObject "TokenCacheModule loaded"
+            $tokenCacheModuleInformation | Should -Be $null # null because we are loaded and only display if we aren't loaded.
         }
     }
 
@@ -161,9 +171,18 @@ Describe "Testing Health Checker by Mock Data Imports" {
             Mock Get-WmiObjectHandler -ParameterFilter { $Class -eq "Win32_Processor" } `
                 -MockWith { return Import-Clixml "$Script:MockDataCollectionRoot\Hardware\Physical_Win32_Processor.xml" }
             Mock Get-ExSetupDetails { return Import-Clixml "$Script:MockDataCollectionRoot\Exchange\ExSetup1.xml" }
+            Mock Get-WebSite -ParameterFilter { $Name -eq "Default Web Site" } -MockWith { return Import-Clixml "$Script:MockDataCollectionRoot\Exchange\IIS\GetWebSite_DefaultWebSite1.xml" }
+            Mock Get-WebConfigFile -ParameterFilter { $PSPath -eq "IIS:\Sites\Default Web Site" } -MockWith { return [PSCustomObject]@{ FullName = "$Script:MockDataCollectionRoot\Exchange\IIS\DefaultWebSite_web2.config" } }
             Mock Invoke-ScriptBlockHandler -ParameterFilter { $ScriptBlockDescription -eq "Getting applicationHost.config" } -MockWith { return Get-Content "$Script:MockDataCollectionRoot\Exchange\IIS\applicationHost2.config" -Raw }
+            Mock Get-DynamicDistributionGroup { return Import-Clixml "$Script:MockDataCollectionRoot\Exchange\GetDynamicDistributionGroupPfMailboxes1.xml" }
+            Mock Invoke-ScriptBlockHandler -ParameterFilter { $ScriptBlockDescription -eq "Get TokenCacheModule version information" } -MockWith { return Import-Clixml "$Script:MockDataCollectionRoot\Exchange\IIS\GetVersionInformationCachToknPatched.xml" }
 
             SetDefaultRunOfHealthChecker "Debug_Physical_Results.xml"
+        }
+
+        It "Dynamic Public Folder Mailboxes" {
+            SetActiveDisplayGrouping "Organization Information"
+            TestObjectMatch "Dynamic Distribution Group Public Folder Mailboxes Count" 2 -WriteType "Red"
         }
 
         It "Extended Protection Enabled" {
@@ -204,16 +223,39 @@ Describe "Testing Health Checker by Mock Data Imports" {
             $Script:ActiveGrouping.Count | Should -Be 18
         }
 
+        It "Display Results - Frequent Configuration Issues" {
+            SetActiveDisplayGrouping "Frequent Configuration Issues"
+            TestObjectMatch "hsts-Enabled-Default Web Site" $true -WriteType "Green"
+            TestObjectMatch "hsts-max-age-Default Web Site" 300 -WriteType "Yellow"
+            TestObjectMatch "hsts-includeSubDomains-Default Web Site" $false
+            TestObjectMatch "hsts-preload-Default Web Site" $false
+            TestObjectMatch "hsts-redirectHttpToHttps-Default Web Site" $false
+            TestObjectMatch "hsts-conflict" $true -WriteType "Yellow"
+            TestObjectMatch "hsts-MoreInfo" $true -WriteType "Yellow"
+        }
+
         It "Display Results - Security Settings" {
             SetActiveDisplayGrouping "Security Settings"
             TestObjectMatch "AMSI Enabled" "True" -WriteType "Green"
             TestObjectMatch "SerializedDataSigning Enabled" "False" -WriteType "Yellow"
         }
 
-        It "Extended Protection" {
+        It "Display Results - Security Vulnerability" {
             SetActiveDisplayGrouping "Security Vulnerability"
+
+            $cveEntries = GetObject "Security Vulnerability"
+            $cveEntries.Contains("CVE-2023-36434") | Should -Be $false # false because loaded module with greater than patch value.
+        }
+
+        It "Extended Protection" {
             TestObjectMatch "Extended Protection Vulnerable" "True" -WriteType "Red"
             TestObjectMatch "Extended Protection Vulnerable Details" "Extended Protection isn't configured as expected" -WriteType "Red"
+        }
+
+        It "Display Results - Exchange IIS Information" {
+            SetActiveDisplayGrouping "Exchange IIS Information"
+            $tokenCacheModuleInformation = GetObject "TokenCacheModule loaded"
+            $tokenCacheModuleInformation | Should -Be $null # null because we are loaded
         }
     }
 

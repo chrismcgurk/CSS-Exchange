@@ -21,6 +21,8 @@ function Invoke-AnalyzerExchangeInformation {
     $keyExchangeInformation = Get-DisplayResultsGroupingKey -Name "Exchange Information"  -DisplayOrder $Order
     $exchangeInformation = $HealthServerObject.ExchangeInformation
     $hardwareInformation = $HealthServerObject.HardwareInformation
+    $getWebServicesVirtualDirectory = $exchangeInformation.VirtualDirectories.GetWebServicesVirtualDirectory |
+        Where-Object { $_.Name -eq "EWS (Default Web Site)" }
 
     $baseParams = @{
         AnalyzedInformation = $AnalyzeResults
@@ -116,6 +118,8 @@ function Invoke-AnalyzerExchangeInformation {
 
     if ($null -ne $exchangeInformation.BuildInformation.KBsInstalled) {
         Add-AnalyzedResultInformation -Name "Exchange IU or Security Hotfix Detected" @baseParams
+        $problemKbFound = $false
+        $problemKbName = "KB5029388"
 
         foreach ($kb in $exchangeInformation.BuildInformation.KBsInstalled) {
             $params = $baseParams + @{
@@ -123,6 +127,32 @@ function Invoke-AnalyzerExchangeInformation {
                 DisplayCustomTabNumber = 2
             }
             Add-AnalyzedResultInformation @params
+
+            if ($kb.Contains($problemKbName)) {
+                $problemKbFound = $true
+            }
+        }
+
+        if ($problemKbFound) {
+            Write-Verbose "Found problem $problemKbName"
+            if ($null -ne $HealthServerObject.OSInformation.BuildInformation.OperatingSystem.OSLanguage) {
+                [int]$OSLanguageID = [int]($HealthServerObject.OSInformation.BuildInformation.OperatingSystem.OSLanguage)
+                # https://learn.microsoft.com/en-us/windows/win32/cimwin32prov/win32-operatingsystem
+                $englishLanguageIDs = @(9, 1033, 2057, 3081, 4105, 5129, 6153, 7177, 8201, 10249, 11273)
+                if ($englishLanguageIDs.Contains($OSLanguageID)) {
+                    Write-Verbose "OS is english language. No action required"
+                } else {
+                    Write-Verbose "Non english language code: $OSLanguageID"
+                    $params = $baseParams + @{
+                        Details                = "Error: August 2023 SU 1 Problem Detected. More Information: https://aka.ms/HC-Aug23SUIssue"
+                        DisplayWriteType       = "Red"
+                        DisplayCustomTabNumber = 2
+                    }
+                    Add-AnalyzedResultInformation @params
+                }
+            } else {
+                Write-Verbose "Language Code is null"
+            }
         }
     }
 
@@ -180,8 +210,8 @@ function Invoke-AnalyzerExchangeInformation {
     if ($exchangeInformation.GetExchangeServer.IsEdgeServer -eq $false) {
 
         Write-Verbose "Working on MRS Proxy Settings"
-        $mrsProxyDetails = $exchangeInformation.GetWebServicesVirtualDirectory.MRSProxyEnabled
-        if ($exchangeInformation.GetWebServicesVirtualDirectory.MRSProxyEnabled) {
+        $mrsProxyDetails = $getWebServicesVirtualDirectory.MRSProxyEnabled
+        if ($getWebServicesVirtualDirectory.MRSProxyEnabled) {
             $mrsProxyDetails = "$mrsProxyDetails`n`r`t`tKeep MRS Proxy disabled if you do not plan to move mailboxes cross-forest or remote"
             $mrsProxyWriteType = "Yellow"
         } else {
@@ -266,10 +296,10 @@ function Invoke-AnalyzerExchangeInformation {
     }
     Add-AnalyzedResultInformation @params
 
-    if (-not ([string]::IsNullOrWhiteSpace($exchangeInformation.GetWebServicesVirtualDirectory.InternalNLBBypassUrl))) {
+    if (-not ([string]::IsNullOrWhiteSpace($getWebServicesVirtualDirectory.InternalNLBBypassUrl))) {
         $params = $baseParams + @{
             Name             = "EWS Internal Bypass URL Set"
-            Details          = "$($exchangeInformation.GetWebServicesVirtualDirectory.InternalNLBBypassUrl) - Can cause issues after KB 5001779"
+            Details          = "$($getWebServicesVirtualDirectory.InternalNLBBypassUrl) - Can cause issues after KB 5001779"
             DisplayWriteType = "Red"
         }
         Add-AnalyzedResultInformation @params
@@ -346,6 +376,35 @@ function Invoke-AnalyzerExchangeInformation {
             Details = $exchangeInformation.ExtendedProtectionConfig.ExtendedProtectionConfigured
         }
         Add-AnalyzedResultInformation @params
+
+        # If any directory has a higher than expected configuration, we need to throw a warning
+        # This will be detected by SupportedExtendedProtection being set to false, as we are set higher than expected/recommended value you will likely run into issues of some kind
+        $notSupportedExtendedProtectionDirectories = $exchangeInformation.ExtendedProtectionConfig.ExtendedProtectionConfiguration |
+            Where-Object { $_.SupportedExtendedProtection -eq $false }
+
+        if ($null -ne $notSupportedExtendedProtectionDirectories) {
+            foreach ($entry in $notSupportedExtendedProtectionDirectories) {
+                $expectedValue = if ($entry.MitigationSupported -and $entry.MitigationEnabled) { "None" } else { $entry.ExpectedExtendedConfiguration }
+                $params = $baseParams + @{
+                    Details                = "$($entry.VirtualDirectoryName) - Current Value: '$($entry.ExtendedProtection)'   Expected Value: '$expectedValue'"
+                    DisplayWriteType       = "Yellow"
+                    DisplayCustomTabNumber = 2
+                    TestingName            = "EP - $($entry.VirtualDirectoryName)"
+                    DisplayTestingValue    = ($entry.ExtendedProtection)
+                }
+                Add-AnalyzedResultInformation @params
+            }
+
+            $params = $baseParams + @{
+                Details          = "`r`n`t`tThe current Extended Protection settings may cause issues with some clients types on $(if(@($notSupportedExtendedProtectionDirectories).Count -eq 1) { "this protocol."} else { "these protocols."})" +
+                "`r`n`t`tIt is recommended to set the EP setting to the recommended value if you are having issues with that protocol." +
+                "`r`n`t`tMore Information: https://aka.ms/ExchangeEPDoc"
+                DisplayWriteType = "Yellow"
+            }
+            Add-AnalyzedResultInformation @params
+        } else {
+            Write-Verbose "All virtual directories are supported for the Extended Protection value."
+        }
     }
 
     if ($null -ne $exchangeInformation.SettingOverrides) {

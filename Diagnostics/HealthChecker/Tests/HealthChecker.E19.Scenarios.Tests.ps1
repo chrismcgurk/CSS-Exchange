@@ -35,11 +35,14 @@ Describe "Testing Health Checker by Mock Data Imports" {
             Mock Get-HttpProxySetting { return Import-Clixml "$Script:MockDataCollectionRoot\OS\GetHttpProxySetting1.xml" }
             Mock Get-AcceptedDomain { return Import-Clixml "$Script:MockDataCollectionRoot\Exchange\GetAcceptedDomain_Problem.xml" }
             Mock Test-Path -ParameterFilter { $Path -eq "C:\Program Files\Microsoft\Exchange Server\V15\FrontEnd\HttpProxy\SharedWebConfig.config" } -MockWith { return $false }
+            Mock Get-WebSite -ParameterFilter { $Name -eq "Default Web Site" } -MockWith { return Import-Clixml "$Script:MockDataCollectionRoot\Exchange\IIS\GetWebSite_DefaultWebSite1.xml" }
+            Mock Get-WebSite -ParameterFilter { $Name -eq "Exchange Back End" } -MockWith { return Import-Clixml "$Script:MockDataCollectionRoot\Exchange\IIS\GetWebSite_ExchangeBackEnd1.xml" }
             # Needs to be like this to match the filter
             Mock Get-WebConfigFile -ParameterFilter { $PSPath -eq "IIS:\Sites\Exchange Back End/ecp" } -MockWith { return [PSCustomObject]@{ FullName = "$Script:MockDataCollectionRoot\Exchange\IIS\ClientAccess\ecp\web.config" } }
             Mock Get-WebConfigFile -ParameterFilter { $PSPath -eq "IIS:\Sites\Default Web Site/ecp" } -MockWith { return [PSCustomObject]@{ FullName = "$Script:MockDataCollectionRoot\Exchange\IIS\DefaultWebSite_web.config" } }
             Mock Invoke-ScriptBlockHandler -ParameterFilter { $ScriptBlockDescription -eq "Getting applicationHost.config" } -MockWith { return Get-Content "$Script:MockDataCollectionRoot\Exchange\IIS\applicationHost1.config" -Raw }
             Mock Get-ExchangeDiagnosticInfo { return Import-Clixml "$Script:MockDataCollectionRoot\Exchange\GetExchangeDiagnosticInfo1.xml" }
+            Mock Get-IISModules { return Import-Clixml "$Script:MockDataCollectionRoot\Exchange\GetIISModulesNoTokenCacheModule.xml" }
             Mock Get-Service {
                 param(
                     [string]$ComputerName,
@@ -109,6 +112,27 @@ Describe "Testing Health Checker by Mock Data Imports" {
             TestObjectMatch "Bin Search Folder Not Found" $true -WriteType "Red"
         }
 
+        It "Testing Native HSTS Default Web Site config" {
+            #Native Default Web Site
+            TestObjectMatch "hsts-Enabled-Default Web Site" $true -WriteType "Green"
+            TestObjectMatch "hsts-max-age-Default Web Site" 300 -WriteType "Yellow"
+            TestObjectMatch "hsts-includeSubDomains-Default Web Site" $false
+            TestObjectMatch "hsts-preload-Default Web Site" $false
+            TestObjectMatch "hsts-redirectHttpToHttps-Default Web Site" $false
+        }
+
+        It "Testing Native HSTS Default Web Site config" {
+            #Native Exchange Back End
+            TestObjectMatch "hsts-Enabled-Exchange Back End" $true -WriteType "Red"
+            TestObjectMatch "hsts-max-age-Exchange Back End" 31536000 -WriteType "Green" # Going to be green even on backend
+            TestObjectMatch "hsts-includeSubDomains-Exchange Back End" $false
+            TestObjectMatch "hsts-preload-Exchange Back End" $false
+            TestObjectMatch "hsts-redirectHttpToHttps-Exchange Back End" $true -WriteType "Red"
+            TestObjectMatch "hsts-BackendNotSupported" $true -WriteType "Red"
+
+            TestObjectMatch "hsts-MoreInfo" $true -WriteType "Yellow"
+        }
+
         It "Server Pending Reboot" {
             SetActiveDisplayGrouping "Operating System Information"
             TestObjectMatch "Server Pending Reboot" "True" -WriteType "Yellow"
@@ -162,6 +186,14 @@ Describe "Testing Health Checker by Mock Data Imports" {
             TestObjectMatch "Windows service" "Running"
             TestObjectMatch "Pattern service" "200 - Reachable"
             TestObjectMatch "Telemetry enabled" "False"
+        }
+
+        It "CVE-2023-36434 Test - Module Not loaded" {
+            SetActiveDisplayGrouping "Security Vulnerability"
+            $cveEntries = GetObject "Security Vulnerability"
+            $cveEntries.Contains("CVE-2023-36434") | Should -Be $false # false because it isn't loaded.
+            SetActiveDisplayGrouping "Exchange IIS Information"
+            TestObjectMatch "TokenCacheModule loaded" $true -WriteType "Yellow"
         }
     }
 
@@ -264,6 +296,7 @@ Describe "Testing Health Checker by Mock Data Imports" {
         It "Extended Protection Enabled" {
             SetActiveDisplayGrouping "Exchange Information"
             TestObjectMatch "Extended Protection Enabled (Any VDir)" $true
+            TestObjectMatch "EP - Default Web Site/OAB" "Require" -WriteType "Yellow"
         }
 
         It "Number of Processors" {
